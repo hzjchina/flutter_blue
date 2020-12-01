@@ -296,14 +296,14 @@ public class FlutterBluePlugin implements FlutterPlugin, ActivityAware, MethodCa
                 }
 
                 // If device was connected to previously but is now disconnected, attempt a reconnect
-                if(mDevices.containsKey(deviceId) && !isConnected) {
+                /*if(mDevices.containsKey(deviceId) && !isConnected) {
                     if(mDevices.get(deviceId).gatt.connect()){
                         result.success(null);
                     } else {
                         result.error("reconnect_error", "error when reconnecting to device", null);
                     }
                     return;
-                }
+                }*///注释
 
                 // New request, connect and add gattServer to Map
                 BluetoothGatt gattServer;
@@ -858,11 +858,20 @@ public class FlutterBluePlugin implements FlutterPlugin, ActivityAware, MethodCa
         @Override
         public void onConnectionStateChange(BluetoothGatt gatt, int status, int newState) {
             log(LogLevel.DEBUG, "[onConnectionStateChange] status: " + status + " newState: " + newState);
-            if(newState == BluetoothProfile.STATE_DISCONNECTED) {
-                if(!mDevices.containsKey(gatt.getDevice().getAddress())) {
-                    gatt.close();
+
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+//                    if (!mDevices.containsKey(gatt.getDevice().getAddress())) {
+//                        gatt.close();
+//                    }
+                    if (gatt != null) gatt.close();
                 }
+
+            }else{
+                if (gatt != null) gatt.close();
+                //重新连接
             }
+
             invokeMethodUIThread("DeviceState", ProtoMaker.from(gatt.getDevice(), newState).toByteArray());
         }
 
