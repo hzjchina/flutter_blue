@@ -247,20 +247,6 @@ public class FlutterBluePlugin implements FlutterPlugin, ActivityAware, MethodCa
                     pendingCall = call;
                     pendingResult = result;
                     break;
-
-
-                    /*if (ContextCompat.checkSelfPermission(activity, Manifest.permission.BLUETOOTH_CONNECT)
-                            != PackageManager.PERMISSION_GRANTED) {
-                        ActivityCompat.requestPermissions(
-                                activity,
-                                new String[] {
-                                        Manifest.permission.ACCESS_FINE_LOCATION
-                                },
-                                REQUEST_FINE_LOCATION_PERMISSIONS);
-                        pendingCall = call;
-                        pendingResult = result;
-                        break;
-                    }*/
                 }else{
 
                     if (ContextCompat.checkSelfPermission(activity, Manifest.permission.ACCESS_FINE_LOCATION)
@@ -282,6 +268,28 @@ public class FlutterBluePlugin implements FlutterPlugin, ActivityAware, MethodCa
 
             case "stopScan":
             {
+                if((Build.VERSION.SDK_INT > Build.VERSION_CODES.R)){
+
+                    ActivityCompat.requestPermissions(activity, new String[]{Manifest.permission.BLUETOOTH_SCAN,Manifest.permission.BLUETOOTH_CONNECT,Manifest.permission.BLUETOOTH_ADVERTISE},
+                            REQUEST_FINE_LOCATION_PERMISSIONS);
+                    pendingCall = call;
+                    pendingResult = result;
+                    break;
+                }else{
+
+                    if (ContextCompat.checkSelfPermission(activity, Manifest.permission.ACCESS_FINE_LOCATION)
+                            != PackageManager.PERMISSION_GRANTED) {
+                        ActivityCompat.requestPermissions(
+                                activity,
+                                new String[] {
+                                        Manifest.permission.ACCESS_FINE_LOCATION
+                                },
+                                REQUEST_FINE_LOCATION_PERMISSIONS);
+                        pendingCall = call;
+                        pendingResult = result;
+                        break;
+                    }
+                }
                 stopScan();
                 result.success(null);
                 break;
@@ -839,8 +847,10 @@ public class FlutterBluePlugin implements FlutterPlugin, ActivityAware, MethodCa
 
     @TargetApi(21)
     private void stopScan21() {
-        BluetoothLeScanner scanner = mBluetoothAdapter.getBluetoothLeScanner();
-        if(scanner != null) scanner.stopScan(getScanCallback21());
+        if(mBluetoothAdapter != null) {
+            BluetoothLeScanner scanner = mBluetoothAdapter.getBluetoothLeScanner();
+            if (scanner != null) scanner.stopScan(getScanCallback21());
+        }
     }
 
     private BluetoothAdapter.LeScanCallback scanCallback18;
