@@ -650,16 +650,22 @@ public class FlutterBluePlugin implements FlutterPlugin, ActivityAware, MethodCa
     @Override
     public boolean onRequestPermissionsResult(
             int requestCode, String[] permissions, int[] grantResults) {
-        if (requestCode == REQUEST_FINE_LOCATION_PERMISSIONS) {
-            if (grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                startScan(pendingCall, pendingResult);
-            } else {
-                pendingResult.error(
-                        "no_permissions", "flutter_blue plugin requires location permissions for scanning", null);
-                pendingResult = null;
-                pendingCall = null;
+        try {
+            if (requestCode == REQUEST_FINE_LOCATION_PERMISSIONS) {
+                if (grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                    if(pendingResult!=null && pendingCall!=null)startScan(pendingCall, pendingResult);
+                } else {
+                if(pendingResult!=null)    pendingResult.error(
+                            "no_permissions", "flutter_blue plugin requires location permissions for scanning", null);
+                    pendingResult = null;
+                    pendingCall = null;
+                }
+                return true;
             }
-            return true;
+        }catch (Exception e){
+            if(pendingResult!=null)pendingResult.error(
+                    "no_permissions", "flutter_blue plugin requires location permissions for scanning", null);
+            e.printStackTrace();
         }
         return false;
     }
@@ -784,12 +790,16 @@ public class FlutterBluePlugin implements FlutterPlugin, ActivityAware, MethodCa
                 @Override
                 public void onScanResult(int callbackType, ScanResult result) {
                     super.onScanResult(callbackType, result);
-                    if (!allowDuplicates && result != null && result.getDevice() != null && result.getDevice().getAddress() != null) {
-                        if (macDeviceScanned.contains(result.getDevice().getAddress())) return;
-                        macDeviceScanned.add(result.getDevice().getAddress());
+                    try {
+                        if (!allowDuplicates && result != null && result.getDevice() != null && result.getDevice().getAddress() != null) {
+                            if (macDeviceScanned.contains(result.getDevice().getAddress())) return;
+                            macDeviceScanned.add(result.getDevice().getAddress());
+                        }
+                        Protos.ScanResult scanResult = ProtoMaker.from(result.getDevice(), result);
+                        invokeMethodUIThread("ScanResult", scanResult.toByteArray());
+                    }catch (Exception e){
+                        e.printStackTrace();
                     }
-                    Protos.ScanResult scanResult = ProtoMaker.from(result.getDevice(), result);
-                    invokeMethodUIThread("ScanResult", scanResult.toByteArray());
                 }
 
                 @Override
@@ -1022,7 +1032,7 @@ public class FlutterBluePlugin implements FlutterPlugin, ActivityAware, MethodCa
                 new Runnable() {
                     @Override
                     public void run() {
-                        channel.invokeMethod(name, byteArray);
+                      if(channel!=null)  channel.invokeMethod(name, byteArray);
                     }
                 });
     }
