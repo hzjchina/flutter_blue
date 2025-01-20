@@ -4,6 +4,8 @@
 
 package com.pauldemarco.flutter_blue;
 
+import static java.lang.Thread.sleep;
+
 import android.app.Activity;
 import android.Manifest;
 import android.annotation.TargetApi;
@@ -88,6 +90,7 @@ public class FlutterBluePlugin implements FlutterPlugin, ActivityAware, MethodCa
     private Result pendingResult;
     private ArrayList<String> macDeviceScanned = new ArrayList<>();
     private boolean allowDuplicates = false;
+    private volatile boolean rwBusy = false;
 
     /** Plugin registration. */
     public static void registerWith(Registrar registrar) {
@@ -281,7 +284,7 @@ public class FlutterBluePlugin implements FlutterPlugin, ActivityAware, MethodCa
                     p.addDevices(ProtoMaker.from(d));
                 }
                 result.success(p.build().toByteArray());
-                log(LogLevel.EMERGENCY, "mDevices size: " + mDevices.size());
+               // log(LogLevel.EMERGENCY, "mDevices size: " + mDevices.size());
                 break;
             }
 
@@ -453,6 +456,7 @@ public class FlutterBluePlugin implements FlutterPlugin, ActivityAware, MethodCa
             case "writeCharacteristic":
             {
                 byte[] data = call.arguments();
+                //log(LogLevel.DEBUG,"writeCharacteristic: data length = "+data.length);
                 Protos.WriteCharacteristicRequest request;
                 try {
                     request = Protos.WriteCharacteristicRequest.newBuilder().mergeFrom(data).build();
@@ -470,7 +474,8 @@ public class FlutterBluePlugin implements FlutterPlugin, ActivityAware, MethodCa
                     result.error("write_characteristic_error", e.getMessage(), null);
                     return;
                 }
-
+                //log(LogLevel.DEBUG,"writeCharacteristic: data length2 = "+request.getValue().toByteArray().length);
+                //log(LogLevel.DEBUG,"writeCharacteristic: data length3 = "+request.getValue().toByteArray());
                 // Set characteristic to new value
                 if(!characteristic.setValue(request.getValue().toByteArray())){
                     result.error("write_characteristic_error", "could not set the local value of characteristic", null);
@@ -479,6 +484,7 @@ public class FlutterBluePlugin implements FlutterPlugin, ActivityAware, MethodCa
                 // Apply the correct write type
                 if(request.getWriteType() == Protos.WriteCharacteristicRequest.WriteType.WITHOUT_RESPONSE) {
                     characteristic.setWriteType(BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE);
+                    rwBusy = true;
                 } else {
                     characteristic.setWriteType(BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
                 }
@@ -487,7 +493,8 @@ public class FlutterBluePlugin implements FlutterPlugin, ActivityAware, MethodCa
                     result.error("write_characteristic_error", "writeCharacteristic failed", null);
                     return;
                 }
-
+                waitIdle(1000);
+                //log(LogLevel.DEBUG, "[writeCharacteristic] ok rwBusy: " + rwBusy );
                 result.success(null);
                 break;
             }
@@ -624,7 +631,9 @@ public class FlutterBluePlugin implements FlutterPlugin, ActivityAware, MethodCa
                     gatt = locateGatt(request.getRemoteId());
                     int mtu = request.getMtu();
                     if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        rwBusy = true;
                         if(gatt.requestMtu(mtu)) {
+                            waitIdle(1000);
                             result.success(null);
                         } else {
                             result.error("requestMtu", "gatt.requestMtu returned false", null);
@@ -645,6 +654,25 @@ public class FlutterBluePlugin implements FlutterPlugin, ActivityAware, MethodCa
                 break;
             }
         }
+    }
+
+    private boolean waitIdle(long timeout) {
+        long timeout_tmp = timeout *50+1;
+        while (timeout_tmp-->0) {
+            if (!rwBusy) {
+                return true;
+            }
+//            if(!isConnected()){
+//                return false;
+//            }
+            try {
+                sleep(0,1000*20);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }
+        rwBusy=false;
+        return false;
     }
 
     @Override
@@ -877,17 +905,23 @@ public class FlutterBluePlugin implements FlutterPlugin, ActivityAware, MethodCa
     private final BluetoothGattCallback mGattCallback = new BluetoothGattCallback() {
         @Override
         public void onConnectionStateChange(BluetoothGatt gatt, int status, int newState) {
-            log(LogLevel.DEBUG, "[onConnectionStateChange] status: " + status + " newState: " + newState);
+            //log(LogLevel.DEBUG, "[onConnectionStateChange] status: " + status + " newState: " + newState);
 
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 if (newState == BluetoothProfile.STATE_DISCONNECTED) {
 //                    if (!mDevices.containsKey(gatt.getDevice().getAddress())) {
 //                        gatt.close();
 //                    }
+                    rwBusy = false;
                     if (gatt != null) gatt.close();
                 }
 
+                if (newState == BluetoothProfile.STATE_CONNECTED && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH);
+                }
+
             }else{
+                rwBusy = false;
                 if (gatt != null) gatt.close();
                 //重新连接
             }
@@ -897,7 +931,10 @@ public class FlutterBluePlugin implements FlutterPlugin, ActivityAware, MethodCa
 
         @Override
         public void onServicesDiscovered(BluetoothGatt gatt, int status) {
-            log(LogLevel.DEBUG, "[onServicesDiscovered] count: " + gatt.getServices().size() + " status: " + status);
+            //log(LogLevel.DEBUG, "[onServicesDiscovered] count: " + gatt.getServices().size() + " status: " + status);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH);
+            }
             Protos.DiscoverServicesResult.Builder p = Protos.DiscoverServicesResult.newBuilder();
             p.setRemoteId(gatt.getDevice().getAddress());
             for(BluetoothGattService s : gatt.getServices()) {
@@ -908,7 +945,8 @@ public class FlutterBluePlugin implements FlutterPlugin, ActivityAware, MethodCa
 
         @Override
         public void onCharacteristicRead(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, int status) {
-            log(LogLevel.DEBUG, "[onCharacteristicRead] uuid: " + characteristic.getUuid().toString() + " status: " + status);
+            rwBusy = false;
+            //log(LogLevel.DEBUG, "[onCharacteristicRead] uuid: " + characteristic.getUuid().toString() + " status: " + status);
             Protos.ReadCharacteristicResponse.Builder p = Protos.ReadCharacteristicResponse.newBuilder();
             p.setRemoteId(gatt.getDevice().getAddress());
             p.setCharacteristic(ProtoMaker.from(gatt.getDevice(), characteristic, gatt));
@@ -917,7 +955,8 @@ public class FlutterBluePlugin implements FlutterPlugin, ActivityAware, MethodCa
 
         @Override
         public void onCharacteristicWrite(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, int status) {
-            log(LogLevel.DEBUG, "[onCharacteristicWrite] uuid: " + characteristic.getUuid().toString() + " status: " + status);
+            rwBusy = false;
+            //log(LogLevel.DEBUG, "[onCharacteristicWrite] uuid: " + characteristic.getUuid().toString() + " status: " + status);
             Protos.WriteCharacteristicRequest.Builder request = Protos.WriteCharacteristicRequest.newBuilder();
             request.setRemoteId(gatt.getDevice().getAddress());
             request.setCharacteristicUuid(characteristic.getUuid().toString());
@@ -930,7 +969,7 @@ public class FlutterBluePlugin implements FlutterPlugin, ActivityAware, MethodCa
 
         @Override
         public void onCharacteristicChanged(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
-            log(LogLevel.DEBUG, "[onCharacteristicChanged] uuid: " + characteristic.getUuid().toString());
+            //log(LogLevel.DEBUG, "[onCharacteristicChanged] uuid: " + characteristic.getUuid().toString());
             Protos.OnCharacteristicChanged.Builder p = Protos.OnCharacteristicChanged.newBuilder();
             p.setRemoteId(gatt.getDevice().getAddress());
             p.setCharacteristic(ProtoMaker.from(gatt.getDevice(), characteristic, gatt));
@@ -939,7 +978,7 @@ public class FlutterBluePlugin implements FlutterPlugin, ActivityAware, MethodCa
 
         @Override
         public void onDescriptorRead(BluetoothGatt gatt, BluetoothGattDescriptor descriptor, int status) {
-            log(LogLevel.DEBUG, "[onDescriptorRead] uuid: " + descriptor.getUuid().toString() + " status: " + status);
+            //log(LogLevel.DEBUG, "[onDescriptorRead] uuid: " + descriptor.getUuid().toString() + " status: " + status);
             // Rebuild the ReadAttributeRequest and send back along with response
             Protos.ReadDescriptorRequest.Builder q = Protos.ReadDescriptorRequest.newBuilder();
             q.setRemoteId(gatt.getDevice().getAddress());
@@ -967,7 +1006,7 @@ public class FlutterBluePlugin implements FlutterPlugin, ActivityAware, MethodCa
 
         @Override
         public void onDescriptorWrite(BluetoothGatt gatt, BluetoothGattDescriptor descriptor, int status) {
-            log(LogLevel.DEBUG, "[onDescriptorWrite] uuid: " + descriptor.getUuid().toString() + " status: " + status);
+            //log(LogLevel.DEBUG, "[onDescriptorWrite] uuid: " + descriptor.getUuid().toString() + " status: " + status);
             Protos.WriteDescriptorRequest.Builder request = Protos.WriteDescriptorRequest.newBuilder();
             request.setRemoteId(gatt.getDevice().getAddress());
             request.setDescriptorUuid(descriptor.getUuid().toString());
@@ -989,17 +1028,18 @@ public class FlutterBluePlugin implements FlutterPlugin, ActivityAware, MethodCa
 
         @Override
         public void onReliableWriteCompleted(BluetoothGatt gatt, int status) {
-            log(LogLevel.DEBUG, "[onReliableWriteCompleted] status: " + status);
+           // log(LogLevel.DEBUG, "[onReliableWriteCompleted] status: " + status);
         }
 
         @Override
         public void onReadRemoteRssi(BluetoothGatt gatt, int rssi, int status) {
-            log(LogLevel.DEBUG, "[onReadRemoteRssi] rssi: " + rssi + " status: " + status);
+            //log(LogLevel.DEBUG, "[onReadRemoteRssi] rssi: " + rssi + " status: " + status);
         }
 
         @Override
         public void onMtuChanged(BluetoothGatt gatt, int mtu, int status) {
-            log(LogLevel.DEBUG, "[onMtuChanged] mtu: " + mtu + " status: " + status);
+            //log(LogLevel.DEBUG, "[onMtuChanged] mtu: " + mtu + " status: " + status);
+            rwBusy = false;
             if(status == BluetoothGatt.GATT_SUCCESS) {
                 if(mDevices.containsKey(gatt.getDevice().getAddress())) {
                     BluetoothDeviceCache cache = mDevices.get(gatt.getDevice().getAddress());

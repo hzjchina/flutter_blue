@@ -38,6 +38,8 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
 @property(nonatomic) NSMutableArray *servicesThatNeedDiscovered;
 @property(nonatomic) NSMutableArray *characteristicsThatNeedDiscovered;
 @property(nonatomic) LogLevel logLevel;
+//@property(nonatomic) BOOL rwBusy;
+@property(nonatomic, strong)NSOperationQueue *cmdQueue;
 @end
 
 @implementation FlutterBluePlugin
@@ -53,12 +55,16 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
   instance.servicesThatNeedDiscovered = [NSMutableArray new];
   instance.characteristicsThatNeedDiscovered = [NSMutableArray new];
   instance.logLevel = emergency;
-  
+//  instance.rwBusy = NO;
   // STATE
   FlutterBlueStreamHandler* stateStreamHandler = [[FlutterBlueStreamHandler alloc] init];
   [stateChannel setStreamHandler:stateStreamHandler];
   instance.stateStreamHandler = stateStreamHandler;
   
+    if (nil == instance.cmdQueue) {
+        instance.cmdQueue = [[NSOperationQueue alloc] init];
+        }
+    instance.cmdQueue.maxConcurrentOperationCount = 1;
   [registrar addMethodCallDelegate:instance channel:channel];
 }
 
@@ -106,7 +112,7 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
   } else if([@"getConnectedDevices" isEqualToString:call.method]) {
     // Cannot pass blank UUID list for security reasons. Assume all devices have the Generic Access service 0x1800
     NSArray *periphs = [self->_centralManager retrieveConnectedPeripheralsWithServices:@[[CBUUID UUIDWithString:@"1800"]]];
-    // NSLog(@"getConnectedDevices periphs size: %lu", [periphs count]);
+//    NSLog(@"getConnectedDevices periphs size: %lu", [periphs count]);
     result([self toFlutterData:[self toConnectedDeviceResponseProto:periphs]]);
   } else if([@"connect" isEqualToString:call.method]) {
     FlutterStandardTypedData *data = [call arguments];
@@ -120,6 +126,7 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
                                    details:nil];
       }
       // TODO: Implement Connect options (#36)
+//        [peripheral setP];
       [_centralManager connectPeripheral:peripheral options:nil];
       result(nil);
     } @catch(FlutterError *e) {
@@ -199,14 +206,45 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
     NSString *remoteId = [request remoteId];
     @try {
       // Find peripheral
-      CBPeripheral *peripheral = [self findPeripheral:remoteId];
+      CBPeripheral *peripheral1 = [self findPeripheral:remoteId];
       // Find characteristic
-      CBCharacteristic *characteristic = [self locateCharacteristic:[request characteristicUuid] peripheral:peripheral serviceId:[request serviceUuid] secondaryServiceId:[request secondaryServiceUuid]];
+      CBCharacteristic *characteristic = [self locateCharacteristic:[request characteristicUuid] peripheral:peripheral1 serviceId:[request serviceUuid] secondaryServiceId:[request secondaryServiceUuid]];
       // Get correct write type
       CBCharacteristicWriteType type = ([request writeType] == ProtosWriteCharacteristicRequest_WriteType_WithoutResponse) ? CBCharacteristicWriteWithoutResponse : CBCharacteristicWriteWithResponse;
-      // Write to characteristic
-      [peripheral writeValue:[request value] forCharacteristic:characteristic type:type];
-      result(nil);
+
+        if([request writeType] == ProtosWriteCharacteristicRequest_WriteType_WithoutResponse) {
+//            self.rwBusy = YES;
+            NSOperation *operation = [NSBlockOperation blockOperationWithBlock:^{
+                if (@available(iOS 11.0, *)) {
+//                    NSLog(@"start send complete...wait...11");
+                    BOOL canSendWrite = [peripheral1 canSendWriteWithoutResponse];
+                    if(!canSendWrite){
+                        for(int i=1;i<= 10000;i++){
+                            [NSThread sleepForTimeInterval:0.001];
+                            canSendWrite = [peripheral1 canSendWriteWithoutResponse];
+                            if(canSendWrite) break;
+                        }
+                    }
+                }
+//                NSLog(@"start send...");
+                [peripheral1 writeValue:[request value] forCharacteristic:characteristic type:type];
+            }];
+            operation.completionBlock=^{
+                NSLog(@"start return...WithoutResponse");
+                result(nil);
+            };
+//            [NSOperationQueue.mainQueue addOperation:operation];
+            [self.cmdQueue addOperation:operation];
+        }else{
+            // Write to characteristic
+            [peripheral1 writeValue:[request value] forCharacteristic:characteristic type:type];
+//            NSLog(@"start return...withResponse");
+            result(nil);
+        }
+        
+//        [peripheral writeValue:[request value] forCharacteristic:characteristic type:type];
+//        NSLog(@"start return...");
+//        result(nil);
     } @catch(FlutterError *e) {
       result(e);
     }
@@ -252,6 +290,7 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
       result(e);
     }
   } else if([@"requestMtu" isEqualToString:call.method]) {
+//      self.rwBusy = NO;
     result([FlutterError errorWithCode:@"requestMtu" message:@"iOS does not allow mtu requests to the peripheral" details:NULL]);
   } else {
     result(FlutterMethodNotImplemented);
@@ -375,7 +414,7 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
 }
 
 - (void)centralManager:(CBCentralManager *)central didConnectPeripheral:(CBPeripheral *)peripheral {
- // NSLog(@"didConnectPeripheral");
+//  NSLog(@"didConnectPeripheral");
   // Register self as delegate for peripheral
   peripheral.delegate = self;
   
@@ -388,7 +427,7 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
 }
 
 - (void)centralManager:(CBCentralManager *)central didDisconnectPeripheral:(CBPeripheral *)peripheral error:(NSError *)error {
-  // NSLog(@"didDisconnectPeripheral");
+//   NSLog(@"didDisconnectPeripheral");
   // Unregister self as delegate for peripheral, not working #42
   peripheral.delegate = nil;
   
@@ -404,7 +443,7 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
 // CBPeripheralDelegate methods
 //
 - (void)peripheral:(CBPeripheral *)peripheral didDiscoverServices:(NSError *)error {
- // NSLog(@"didDiscoverServices");
+//  NSLog(@"didDiscoverServices");
   // Send negotiated mtu size
   uint32_t mtu = [self getMtu:peripheral];
   [_channel invokeMethod:@"MtuSize" arguments:[self toFlutterData:[self toMtuSizeResponseProto:peripheral mtu:mtu]]];
@@ -412,14 +451,14 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
   // Loop through and discover characteristics and secondary services
   [_servicesThatNeedDiscovered addObjectsFromArray:peripheral.services];
   for(CBService *s in [peripheral services]) {
-   // NSLog(@"Found service: %@", [s.UUID UUIDString]);
+//    NSLog(@"Found service: %@", [s.UUID UUIDString]);
     [peripheral discoverCharacteristics:nil forService:s];
     // [peripheral discoverIncludedServices:nil forService:s]; // Secondary services in the future (#8)
   }
 }
 
 - (void)peripheral:(CBPeripheral *)peripheral didDiscoverCharacteristicsForService:(CBService *)service error:(NSError *)error {
- // NSLog(@"didDiscoverCharacteristicsForService");
+//  NSLog(@"didDiscoverCharacteristicsForService");
   // Loop through and discover descriptors for characteristics
   [_servicesThatNeedDiscovered removeObject:service];
   [_characteristicsThatNeedDiscovered addObjectsFromArray:service.characteristics];
@@ -450,6 +489,7 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
 
 - (void)peripheral:(CBPeripheral *)peripheral didUpdateValueForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error {
 //  NSLog(@"didUpdateValueForCharacteristic %@", [peripheral.identifier UUIDString]);
+//    self.rwBusy = NO;
   ProtosReadCharacteristicResponse *result = [[ProtosReadCharacteristicResponse alloc] init];
   [result setRemoteId:[peripheral.identifier UUIDString]];
   [result setCharacteristic:[self toCharacteristicProto:peripheral characteristic:characteristic]];
@@ -464,6 +504,7 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
 
 - (void)peripheral:(CBPeripheral *)peripheral didWriteValueForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error {
 //  NSLog(@"didWriteValueForCharacteristic");
+//    self.rwBusy = NO;
   ProtosWriteCharacteristicRequest *request = [[ProtosWriteCharacteristicRequest alloc] init];
   [request setRemoteId:[peripheral.identifier UUIDString]];
   [request setCharacteristicUuid:[characteristic.UUID fullUUIDString]];
@@ -537,6 +578,22 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
   [result setSuccess:(error == nil)];
   [_channel invokeMethod:@"WriteDescriptorResponse" arguments:[self toFlutterData:result]];
 }
+
+-(void) peripheralIsReadyToSendWriteWithoutResponse:(CBPeripheral *)peripheral{
+//    NSLog(@"start peripheralIsReadyToSendWriteWithoutResponse...");
+//    self.rwBusy = NO;
+}
+
+//- (BOOL)waitIdle:(long)timeout_tmp {//timeout_tmp=10000
+//    while (timeout_tmp-- >= 0) {
+//        if (!self.rwBusy) {
+//            return YES;
+//        }
+//        [NSThread sleepForTimeInterval:0.001];
+//    }
+//    self.rwBusy = NO;
+//    return NO;
+//}
 
 //
 // Proto Helper methods
@@ -657,8 +714,8 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
 
 - (ProtosBluetoothService*)toServiceProto:(CBPeripheral *)peripheral service:(CBService *)service  {
   ProtosBluetoothService *result = [[ProtosBluetoothService alloc] init];
-//  NSLog(@"peripheral uuid:%@", [peripheral.identifier UUIDString]);
-//  NSLog(@"service uuid:%@", [service.UUID fullUUIDString]);
+//  NSLog(@"peripheral toServiceProto uuid:%@", [peripheral.identifier UUIDString]);
+//  NSLog(@"service toServiceProto uuid:%@", [service.UUID fullUUIDString]);
   [result setRemoteId:[peripheral.identifier UUIDString]];
   [result setUuid:[service.UUID fullUUIDString]];
   [result setIsPrimary:[service isPrimary]];
@@ -686,7 +743,7 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
   [result setRemoteId:[peripheral.identifier UUIDString]];
   [result setProperties:[self toCharacteristicPropsProto:characteristic.properties]];
   [result setValue:[characteristic value]];
-//  NSLog(@"uuid: %@ value: %@", [characteristic.UUID fullUUIDString], [characteristic value]);
+//  NSLog(@"toCharacteristicProto uuid: %@ value: %@", [characteristic.UUID fullUUIDString], [characteristic value]);
   NSMutableArray *descriptorProtos = [NSMutableArray new];
   for(CBDescriptor *d in [characteristic descriptors]) {
     [descriptorProtos addObject:[self toDescriptorProto:peripheral descriptor:d]];
