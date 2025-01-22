@@ -230,7 +230,7 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
                 [peripheral1 writeValue:[request value] forCharacteristic:characteristic type:type];
             }];
             operation.completionBlock=^{
-                NSLog(@"start return...WithoutResponse");
+//                NSLog(@"start return...WithoutResponse");
                 result(nil);
             };
 //            [NSOperationQueue.mainQueue addOperation:operation];
